@@ -13,28 +13,28 @@
 
 set -euxo pipefail
 
-stdout() { printf -- '%s\n' "$@" ; }
-stderr() { stdout "$@" ; } 1>&2
+stdout() { printf -- '%s\n' "${@}" ; }
+stderr() { stdout "${@}" ; } 1>&2
 
-info()  { stdout "[info] $*"; }
-warn()  { stderr "[warn] $*"; }
+info()  { stdout "[info] ${*}"; }
+warn()  { stderr "[warn] ${*}"; }
 
 # error_exit [EXIT_CODE] [MESSAGE...]
 # Never returns 0
 error_exit() {
-    local previous_exit_code=$?
+    local previous_exit_code="${?}"
     local code="${previous_exit_code}"
-    if [ $# -ge 1 ]; then
+    if [ "${#}" -ge 1 ]; then
         printf -v code -- '%d' "${1}" 2>/dev/null && \
             shift || code="${previous_exit_code}"
     fi
-    local line ; for line in "$@"; do
+    local line ; for line in "${@}"; do
         stderr "[error] ${line}"
     done
-    if [ ${code} -eq 0 ]; then
+    if [ "${code}" -eq 0 ]; then
         code=1
     fi
-    exit ${code}
+    exit "${code}"
 }
 
 usage() {
@@ -44,7 +44,7 @@ usage() {
         "-n=code_name"$'\t\t'"Specifies the distro codename, for example bionic" \
         "-h"$'\t\t\t'"Prints this help." \
         "-m=repo_base_url"$'\t'"Specifies the base URL from which to download."
-    exit $#
+    exit "${#}"
 }
 
 readonly LATEST_LLVM_VERSION=23
@@ -54,35 +54,35 @@ readonly BASE_URL="https://apt.llvm.org"
 NEW_DEBIAN_DISTROS=("trixie" "forky" "unstable")
 # Set default values for commandline arguments
 # We default to the current stable branch of LLVM
-LLVM_VERSION=$CURRENT_LLVM_STABLE
+LLVM_VERSION="${CURRENT_LLVM_STABLE}"
 ALL=0
-DISTRO=$(lsb_release -is)
-VERSION_CODENAME=$(lsb_release -cs)
-VERSION=$(lsb_release -sr)
+DISTRO="$(lsb_release -is)"
+VERSION_CODENAME="$(lsb_release -cs)"
+VERSION="$(lsb_release -sr)"
 UBUNTU_CODENAME=""
 CODENAME_FROM_ARGUMENTS=""
 # Obtain VERSION_CODENAME and UBUNTU_CODENAME (for Ubuntu and its derivatives)
 source /etc/os-release
-DISTRO=${DISTRO,,}
+DISTRO="${DISTRO,,}"
 
 # Downloader abstraction: prefer wget, fall back to curl
 download_key() {
-    local url="$1"
+    local url="${1}"
     if command -v wget &>/dev/null; then
-        wget -qO- --retry-connrefused --waitretry=1 --tries=3 "$url"
+        wget -qO- --retry-connrefused --waitretry=1 --tries=3 "${url}"
     elif command -v curl &>/dev/null; then
-        curl --proto '=https' --tlsv1.2 -sSf --retry 3 "$url"
+        curl --proto '=https' --tlsv1.2 -sSf --retry 3 "${url}"
     else
         error_exit 4 "Neither wget nor curl found. Install one and retry."
     fi
 }
 
 check_url() {
-    local url="$1"
+    local url="${1}"
     if command -v wget &>/dev/null; then
-        wget -q --method=HEAD "$url" &>/dev/null
+        wget -q --method=HEAD "${url}" &>/dev/null
     elif command -v curl &>/dev/null; then
-        curl --proto '=https' --tlsv1.2 -sSf --head --retry 2 "$url" >/dev/null 2>&1
+        curl --proto '=https' --tlsv1.2 -sSf --head --retry 2 "${url}" >/dev/null 2>&1
     else
         return 1
     fi
@@ -102,21 +102,21 @@ fi
 # Check for required tools
 needed_binaries=(lsb_release wget gpg)
 # add-apt-repository is not needed for newer Debian distros
-if [[ $is_new_debian -eq 0 ]]; then
+if [[ "${is_new_debian}" -eq 0 ]]; then
     needed_binaries+=(add-apt-repository)
 fi
 
 missing_binaries=()
 for binary in "${needed_binaries[@]}"; do
-    if ! command -v "$binary" &>/dev/null; then
-        if [[ "$binary" == "wget" ]] && command -v curl &>/dev/null; then
+    if ! command -v "${binary}" &>/dev/null; then
+        if [[ "${binary}" == "wget" ]] && command -v curl &>/dev/null; then
             continue
         fi
-        missing_binaries+=("$binary")
+        missing_binaries+=("${binary}")
     fi
 done
 
-if [[ ${#missing_binaries[@]} -gt 0 ]] ; then
+if [[ "${#missing_binaries[@]}" -gt 0 ]] ; then
     error_exit 4 "Missing required tools: ${missing_binaries[*]}" \
         "(hint: apt install lsb-release wget software-properties-common gnupg)" \
         "curl is also supported as an alternative to wget"
@@ -131,23 +131,23 @@ case "${DISTRO}" in
             LINKNAME=
         else
             # "stable" Debian release
-            CODENAME=${VERSION_CODENAME}
-            LINKNAME=-${CODENAME}
+            CODENAME="${VERSION_CODENAME}"
+            LINKNAME="-${CODENAME}"
         fi
         ;;
     *)
         # ubuntu and its derivatives
         if [[ -n "${UBUNTU_CODENAME}" ]]; then
-            CODENAME=${UBUNTU_CODENAME}
+            CODENAME="${UBUNTU_CODENAME}"
             if [[ -n "${CODENAME}" ]]; then
-                LINKNAME=-${CODENAME}
+                LINKNAME="-${CODENAME}"
             fi
         fi
         ;;
 esac
 
 # check for long options
-for arg in "$@"; do
+for arg in "${@}"; do
     case "${arg}" in
         (--help|-h) usage ;;
         (--version) usage error ;;
@@ -156,16 +156,16 @@ for arg in "$@"; do
 done
 
 # read optional command line arguments
-if [ "$#" -ge 1 ] && [ "${1::1}" != "-" ]; then
-    if [ "$1" != "all" ]; then
-        LLVM_VERSION=$1
+if [ "${#}" -ge 1 ] && [ "${1::1}" != "-" ]; then
+    if [ "${1}" != "all" ]; then
+        LLVM_VERSION="${1}"
     else
         # special case for ./llvm.sh all
         ALL=1
     fi
     OPTIND=2
-    if [ "$#" -ge 2 ]; then
-      if [ "$2" == "all" ]; then
+    if [ "${#}" -ge 2 ]; then
+      if [ "${2}" == "all" ]; then
           # Install all packages
           ALL=1
           OPTIND=3
@@ -179,22 +179,22 @@ while getopts ":hm:n:" arg; do
         usage
         ;;
     m)
-        BASE_URL=${OPTARG}
+        BASE_URL="${OPTARG}"
         ;;
     n)
-        CODENAME=${OPTARG}
+        CODENAME="${OPTARG}"
         if [[ "${CODENAME}" == "unstable" ]]; then
             # link name does not apply to unstable repository
             LINKNAME=
         else
-            LINKNAME=-${CODENAME}
+            LINKNAME="-${CODENAME}"
         fi
         CODENAME_FROM_ARGUMENTS="true"
         ;;
     esac
 done
 
-if [[ $EUID -ne 0 ]]; then
+if [[ "${EUID}" -ne 0 ]]; then
     error_exit "This script must be run as root!"
 fi
 
@@ -246,7 +246,7 @@ if [[ "${VERSION_CODENAME}" == "bookworm" ]]; then
     # https://github.com/llvm/llvm-project/issues/62475
     add-apt-repository -y "${REPO_NAME}"
     add-apt-repository -y "${REPO_NAME}"
-elif [[ $is_new_debian -eq 1 ]]; then
+elif [[ "${is_new_debian}" -eq 1 ]]; then
     # workaround missing add-apt-repository in newer Debian and use new source.list format
     SOURCES_FILE="/etc/apt/sources.list.d/http_apt_llvm_org_${CODENAME}_-${VERSION_CODENAME}.sources"
     tee -a "${SOURCES_FILE}" >/dev/null <<EOF
