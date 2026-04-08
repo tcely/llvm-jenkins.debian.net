@@ -24,7 +24,7 @@ warn()  { stderr "[warn] $*"; }
 error_exit() {
     local previous_exit_code=$?
     local code="${previous_exit_code}"
-    if [ $# -gt 1 ]; then
+    if [ $# -ge 1 ]; then
         printf -v code -- '%d' "${1}" 2>/dev/null && \
             shift || code="${previous_exit_code}"
     fi
