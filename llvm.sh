@@ -47,8 +47,9 @@ usage() {
     exit $#
 }
 
-CURRENT_LLVM_STABLE=20
-BASE_URL="https://apt.llvm.org"
+readonly LATEST_LLVM_VERSION=23
+readonly CURRENT_LLVM_STABLE=20
+readonly BASE_URL="https://apt.llvm.org"
 
 NEW_DEBIAN_DISTROS=("trixie" "forky" "unstable")
 # Set default values for commandline arguments
@@ -198,8 +199,8 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 declare -A LLVM_VERSION_PATTERNS
-LLVM_VERSION_PATTERNS["23"]=""
-for (( _v=22; _v - 8; _v-- )) ; do
+LLVM_VERSION_PATTERNS["${LATEST_LLVM_VERSION}"]=""
+for (( _v=9; "${LATEST_LLVM_VERSION}" > "${_v}"; _v++ )); do
     LLVM_VERSION_PATTERNS["${_v}"]="-${_v}"
 done ; unset -v _v
 
