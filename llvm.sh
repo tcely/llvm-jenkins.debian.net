@@ -327,37 +327,48 @@ fi
 
 DISTRO="$(lsb_release -is)"
 VERSION_CODENAME="$(lsb_release -cs)"
-VERSION="$(lsb_release -sr)"
-UBUNTU_CODENAME=""
+VERSION="$(lsb_release -rs)"
+LINKNAME=''
+UBUNTU_CODENAME=''
 
 
 # Obtain VERSION_CODENAME and UBUNTU_CODENAME (for Ubuntu and its derivatives)
 source /etc/os-release
-DISTRO="${DISTRO,,}"
+readonly DISTRO VERSION VERSION_CODENAME
 
-case "${DISTRO}" in
-    debian)
+case "${DISTRO,,}" in
+    (debian)
+        _name="${CODENAME,,}"
+        case "${VERSION,,}" in
+            (testing|unstable) _name='unstable' ;;
+        esac
         # Debian Forky has a workaround because of
         # https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1038383
-        if [[ "${VERSION}" == "unstable" ]] || [[ "${VERSION}" == "testing" ]] || [[ "${VERSION_CODENAME}" == "forky" ]]; then
-            CODENAME=unstable
-            LINKNAME=
+        if [[ 'unstable' == "${_name}" || 'forky' == "${VERSION_CODENAME,,}" ]]; then
+            _name='unstable'
+            LINKNAME=''
         else
             # "stable" Debian release
-            CODENAME="${VERSION_CODENAME}"
-            LINKNAME="-${CODENAME}"
+            _name="${VERSION_CODENAME,,}"
+            LINKNAME="-${_name}"
         fi
+        : "${CODENAME:=${_name}}"
+        unset -v _name
         ;;
     *)
         # ubuntu and its derivatives
-        if [[ -n "${UBUNTU_CODENAME}" ]]; then
-            CODENAME="${UBUNTU_CODENAME}"
-            if [[ -n "${CODENAME}" ]]; then
-                LINKNAME="-${CODENAME}"
-            fi
+        # Use UBUNTU_CODENAME if present (common in derivatives),
+        # otherwise fall back to VERSION_CODENAME
+        _name="${UBUNTU_CODENAME:-${VERSION_CODENAME}}"
+        : "${CODENAME:=${_name,,}}"
+        unset -v _name
+
+        if [[ -n "${CODENAME}" ]]; then
+            LINKNAME="-${CODENAME,,}"
         fi
         ;;
 esac
+readonly CODENAME LINKNAME
 
 
 # double-check both the default and argument value
@@ -381,7 +392,7 @@ fi
 
 # join the repository name
 if [[ -n "${CODENAME}" ]]; then
-    REPO_NAME="deb ${BASE_URL}/${CODENAME}/ llvm-toolchain${LINKNAME}${LLVM_VERSION_STRING} main"
+    readonly REPO_NAME="deb ${BASE_URL}/${CODENAME,,}/ llvm-toolchain${LINKNAME}${LLVM_VERSION_PATTERNS[${LLVM_VERSION}]} main"
     # check if the repository exists for the distro and version
     if ! check_url "${BASE_URL}/${CODENAME,,}"; then
         if (( '1' == "${CODENAME_FROM_ARGUMENTS}" )); then
@@ -411,7 +422,7 @@ if [[ "debian" == "${DISTRO,,}" ]] && (( '0' == "${is_old_debian}" )); then
     #  - Bookworm (12) has a buggy `add-apt-repository` tool
     #  - Trixie (13) and later may not even have that tool
     # As a consequence, we will write the DEB822 format directly below.
-    SOURCES_FILE="/etc/apt/sources.list.d/http_apt_llvm_org_${CODENAME}_-${VERSION_CODENAME}.sources"
+    readonly SOURCES_FILE="/etc/apt/sources.list.d/http_apt_llvm_org_${CODENAME,,}_-${VERSION_CODENAME,,}.sources"
     tee -a "${SOURCES_FILE}" >/dev/null <<EOF
 Types: deb
 Architectures: amd64 arm64
