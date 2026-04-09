@@ -26,7 +26,7 @@ readonly GPG_KEY_URL='https://apt.llvm.org/llvm-snapshot.gpg.key'
 
 # Mapping versions to repo suffixes
 declare -A LLVM_VERSION_PATTERNS
-setup_llvm_version_patterns
+setup_llvm_version_patterns 9
 readonly LLVM_VERSION_PATTERNS
 
 # Priority Tool Flags
@@ -37,12 +37,12 @@ declare -r -a BUSYBOX_WGET_COMMON=(wget -q -O - -T '10')
 # Default values
 # Set default values for commandline arguments
 #
-BASE_URL="https://apt.llvm.org"
-LLVM_VERSION="${CURRENT_LLVM_STABLE}" # Default to the current stable branch
 ALL='0'
-HTTP_CLIENT='none'
+BASE_URL="https://apt.llvm.org"
 CODENAME=''
 CODENAME_FROM_ARGUMENTS='0'
+HTTP_CLIENT='none'
+LLVM_VERSION="${CURRENT_LLVM_STABLE}" # Default to the current stable branch
 
 
 # --- Function Group ---
@@ -52,6 +52,7 @@ stderr() { stdout "${@}" ; } 1>&2
 
 info()  { stdout "[info] ${*}"; }
 warn()  { stderr "[warn] ${*}"; }
+error()  { stderr "[error] ${*}"; }
 
 # error_exit [EXIT_CODE] [MESSAGE...]
 # Never returns 0
@@ -63,7 +64,7 @@ error_exit() {
             shift || code="${previous_exit_code}"
     fi
     local line ; for line in "${@}"; do
-        stderr "[error] ${line}"
+        error "${line}"
     done
     if (( '0' == "${code}" )); then
         code='1'
@@ -88,12 +89,18 @@ usage() {
 }
 
 setup_llvm_version_patterns() {
+    local min_version="${1:-9}" v
+
     # The latest version uses the base repository name (no suffix)
     LLVM_VERSION_PATTERNS["${LATEST_LLVM_VERSION}"]=''
 
-    local _v
-    for (( _v='9'; "${LATEST_LLVM_VERSION}" > "${_v}"; _v++ )); do
-        LLVM_VERSION_PATTERNS["${_v}"]="-${_v}"
+    if (( '1' > "${min_version}" )); then
+        min_version='1'
+        warn 'Adjusted the LLVM minimum version to the lowest valid value.'
+    fi
+
+    for (( v="${min_version}"; "${LATEST_LLVM_VERSION}" > "${v}"; v++ )); do
+        LLVM_VERSION_PATTERNS["${v}"]="-${v}"
     done
 }
 
@@ -105,7 +112,7 @@ parse_flag_value() {
 }
 
 parse_args() {
-    local _flag
+    local flag
     while (( '0' < "${#}" )); do
         case "${1}" in
             (--) break ;;
@@ -117,9 +124,9 @@ parse_args() {
                 shift
                 ;;
             (-m|--mirror)
-                _flag="${1}"
+                flag="${1}"
                 shift
-                parse_flag_value "${_flag}" "${1-}"
+                parse_flag_value "${flag}" "${1-}"
                 BASE_URL="${1}"
                 shift
                 ;;
@@ -129,9 +136,9 @@ parse_args() {
                 shift
                 ;;
             (-n|--code-name)
-                _flag="${1}"
+                flag="${1}"
                 shift
-                parse_flag_value "${_flag}" "${1-}"
+                parse_flag_value "${flag}" "${1-}"
                 CODENAME="${1}"
                 shift
                 CODENAME_FROM_ARGUMENTS='1'
@@ -217,29 +224,29 @@ detect_http_client() {
 }
 
 identify_debian_generation() {
-    local _name _version _major
+    local name version major
     is_old_debian='0'
 
     # Determine Distro Name
-    _name="$(
+    name="$(
         lsb_release -si 2>/dev/null || \
             { . /etc/os-release && echo "${NAME%% *}"; }
         )"
 
-    if [[ 'debian' != "${_name,,}" ]]; then
+    if [[ 'debian' != "${name,,}" ]]; then
         return 0
     fi
 
     # Determine Major Version
-    _version="$(
+    version="$(
         lsb_release -sr 2>/dev/null || \
             { . /etc/os-release && echo "${VERSION_ID}"; }
         )"
     # Debian doesn't require this, but we are keeping it as defensive.
-    _major="${_version%%.*}"
+    major="${version%%.*}"
 
     # Logic: Numeric and less than 12 (Bookworm) is 'old'
-    if [[ "${_major}" =~ ^[0-9]+$ ]] && (( '12' > "${_major}" )); then
+    if [[ "${major}" =~ ^[0-9]+$ ]] && (( '12' > "${major}" )); then
         is_old_debian='1'
     fi
 }
