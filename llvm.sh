@@ -26,15 +26,13 @@ readonly GPG_KEY_URL='https://apt.llvm.org/llvm-snapshot.gpg.key'
 
 # Mapping versions to repo suffixes
 declare -A LLVM_VERSION_PATTERNS
-LLVM_VERSION_PATTERNS["${LATEST_LLVM_VERSION}"]=''
-for (( _v='9'; "${LATEST_LLVM_VERSION}" > "${_v}"; _v++ )); do
-    LLVM_VERSION_PATTERNS["${_v}"]="-${_v}"
-done; unset -v _v
+setup_llvm_version_patterns
 readonly LLVM_VERSION_PATTERNS
 
 # Priority Tool Flags
 declare -r -a CURL_COMMON=(--proto '=https' --tlsv1.2 --silent --show-error --fail --connect-timeout '10' --retry '3')
 declare -r -a WGET_COMMON=(--quiet --retry-connrefused --timeout '10' --tries '3' --waitretry '4')
+declare -r -a BUSYBOX_WGET_COMMON=(wget -q -O - -T '10')
 
 # Default values
 # Set default values for commandline arguments
@@ -87,6 +85,16 @@ usage() {
         '  -m, --mirror <url>'$'\t''Specifies the base URL for download.' \
         '  -h, --help'$'\t\t''Prints this help.'
     exit "${#}"
+}
+
+setup_llvm_version_patterns() {
+    # The latest version uses the base repository name (no suffix)
+    LLVM_VERSION_PATTERNS["${LATEST_LLVM_VERSION}"]=''
+
+    local _v
+    for (( _v='9'; "${LATEST_LLVM_VERSION}" > "${_v}"; _v++ )); do
+        LLVM_VERSION_PATTERNS["${_v}"]="-${_v}"
+    done
 }
 
 parse_flag_value() {
@@ -142,13 +150,16 @@ parse_args() {
                         warn "Unknown or unsupported flag: ${1}"
                         usage error
                         ;;
-                    ([912]*)
+                    ([9123]*)
                         if [[ -z "${LLVM_VERSION_PATTERNS[${1}]+set}" ]]; then
                             error_exit '3' "This script does not support LLVM version ${1}"
                         fi
 
                         LLVM_VERSION="${1}"
                         shift
+                        ;;
+                    (*)
+                        error_exit '1' "Unrecognized argument: ${1}"
                         ;;
                 esac
                 ;;
@@ -173,7 +184,7 @@ parse_args() {
 download_key() {
     local url="${1}"
     case "${HTTP_CLIENT}" in
-        (busybox) busybox wget -q -O - -T '10' "${url}" ;;
+        (busybox) busybox "${BUSYBOX_WGET_COMMON[@]}" "${url}" ;;
         (curl) curl "${CURL_FINAL[@]}" "${url}" ;;
         (wget) wget "${WGET_COMMON[@]}" --output-document - "${url}" ;;
     esac
@@ -182,10 +193,55 @@ download_key() {
 check_url() {
     local url="${1}"
     case "${HTTP_CLIENT}" in
-        (busybox) busybox wget -q --spider -T '10' "${url}" >/dev/null 2>&1 ;;
+        (busybox) busybox "${BUSYBOX_WGET_COMMON[@]}" "${url}" >/dev/null 2>&1 ;;
         (curl) curl "${CURL_FINAL[@]}" --head "${url}" >/dev/null 2>&1 ;;
         (wget) wget "${WGET_COMMON[@]}" --method=HEAD "${url}" >/dev/null 2>&1 ;;
     esac
+}
+
+detect_http_client() {
+    # Priority: curl -> wget -> busybox
+    if builtin command -v curl >/dev/null 2>&1; then
+        HTTP_CLIENT='curl'
+        # Check for retry-all-errors support (modern curl only)
+        if curl --help all 2>/dev/null | grep -Fe 'retry-all-errors' >/dev/null 2>&1; then
+            CURL_FINAL+=('--retry-all-errors')
+        fi
+    elif builtin command -v wget >/dev/null 2>&1; then
+        HTTP_CLIENT='wget'
+    elif builtin command -v busybox >/dev/null && busybox wget --help >/dev/null 2>&1; then
+        HTTP_CLIENT='busybox'
+    else
+        error_exit '4' 'Neither curl nor wget found. Install one and retry.'
+    fi
+}
+
+identify_debian_generation() {
+    local _name _version _major
+    is_old_debian='0'
+
+    # Determine Distro Name
+    _name="$(
+        lsb_release -si 2>/dev/null || \
+            { . /etc/os-release && echo "${NAME%% *}"; }
+        )"
+
+    if [[ 'debian' != "${_name,,}" ]]; then
+        return 0
+    fi
+
+    # Determine Major Version
+    _version="$(
+        lsb_release -sr 2>/dev/null || \
+            { . /etc/os-release && echo "${VERSION_ID}"; }
+        )"
+    # Debian doesn't require this, but we are keeping it as defensive.
+    _major="${_version%%.*}"
+
+    # Logic: Numeric and less than 12 (Bookworm) is 'old'
+    if [[ "${_major}" =~ ^[0-9]+$ ]] && (( '12' > "${_major}" )); then
+        is_old_debian='1'
+    fi
 }
 
 remove_old_key() {
@@ -197,6 +253,26 @@ remove_old_key() {
     apt-key del "6084F3CF814B57C1CF12EFD515CF4D18AF4F7421"
 }
 
+add_pkgs() {
+    if [[ "$(declare -p PKGS 2>/dev/null)" != "declare -A PKGS"* ]]; then
+        warn "PKGS associative array must be declared before calling add_pkgs."
+        return 1
+    fi
+
+    local suffix
+    suffix="${1}"
+    shift
+    # suffix can be empty or already begin with `-`
+    if [[ -n "${suffix}" && "${suffix}" != -* ]]; then
+        suffix="-${suffix}"
+    fi
+
+    local name
+    for name in "${@}"; do
+        PKGS+=(["${name}${LLVM_VERSION_PATTERNS[${LLVM_VERSION}]}${suffix}"]=1)
+    done
+}
+
 
 # --- Execution Start ---
 
@@ -206,7 +282,7 @@ parse_args "${@}"
 # Binary Verification
 declare -a missing_binaries=()
 for _binary in "${NEEDED_BINARIES[@]}"; do
-    if ! command -v "${_binary}" >/dev/null 2>&1; then
+    if ! builtin command -v "${_binary}" >/dev/null 2>&1; then
         missing_binaries+=("${_binary}")
     fi
 done
@@ -214,34 +290,13 @@ unset -v _binary
 
 # HTTP Client Decision (Prioritizing curl)
 declare -a CURL_FINAL=("${CURL_COMMON[@]}")
-if command -v curl >/dev/null 2>&1; then
-    HTTP_CLIENT='curl'
-    if curl --help all 2>/dev/null | grep -Fe 'retry-all-errors' >/dev/null 2>&1; then
-        CURL_FINAL+=('--retry-all-errors')
-    fi
-elif command -v wget >/dev/null 2>&1; then
-    HTTP_CLIENT='wget'
-elif command -v busybox wget --help >/dev/null 2>&1; then
-    HTTP_CLIENT='busybox'
-else
-    error_exit '4' 'Neither curl nor wget found. Install one and retry.'
-fi
+detect_http_client
 readonly CURL_FINAL HTTP_CLIENT
 
 # --- Distro Identification ---
 
 is_old_debian='0'
-if [[ 'Debian' == "$(lsb_release -si 2>/dev/null || :)" ]]; then
-    # Extract the major version (e.g. "12" from "12.5")
-    _debian_version="$(lsb_release -sr 2>/dev/null || :)"
-    _debian_major="${_debian_version%%.*}"
-
-    # If it is numeric and less than 12 (Bookworm), it is 'old'
-    if [[ "${_debian_major}" =~ ^[0-9]+$ ]] && (( '12' > "${_debian_major}" )); then
-        is_old_debian='1'
-    fi
-    unset -v _debian_major _debian_version
-fi
+identify_debian_generation
 readonly is_old_debian
 
 if (( '0' < "${#missing_binaries[@]}" )); then
@@ -268,11 +323,6 @@ if (( '0' < "${#missing_binaries[@]}" )); then
             "(hint: apt install ${_hint_pkgs[*]})" \
             "wget is also supported as an alternative to curl"
     fi
-fi
-
-# Root Check (Fail-fast after validation)
-if (( '0' != "${EUID}" )); then
-    error_exit '1' 'This script must be run as root!'
 fi
 
 DISTRO="$(lsb_release -is)"
@@ -312,16 +362,28 @@ esac
 
 # double-check both the default and argument value
 if [[ -z "${LLVM_VERSION_PATTERNS[${LLVM_VERSION}]+set}" ]]; then
-    error_exit 3 "This script does not support LLVM version ${LLVM_VERSION}"
+    error_exit '3' "This script does not support LLVM version ${LLVM_VERSION}"
 fi
 
-LLVM_VERSION_STRING="${LLVM_VERSION_PATTERNS[${LLVM_VERSION}]}"
+declare -A PKGS
+add_pkgs '' clang{,d} lld{,b}
+if (( '1' == "${ALL}" )); then
+    # packages without any suffix
+    add_pkgs '' clang-{format,tidy,tools}
+    # -dev suffixed packages
+    add_pkgs 'dev' lib{c++{,abi},clang{,-{common,cpp}},lldb,omp,unwind} 'llvm'
+
+    add_pkgs 'tools' llvm
+    if (( '14' < "${LLVM_VERSION}" )); then
+        add_pkgs 'dev' 'libclang-rt' 'libpolly'
+    fi
+fi
 
 # join the repository name
 if [[ -n "${CODENAME}" ]]; then
     REPO_NAME="deb ${BASE_URL}/${CODENAME}/ llvm-toolchain${LINKNAME}${LLVM_VERSION_STRING} main"
     # check if the repository exists for the distro and version
-    if ! check_url "${BASE_URL}/${CODENAME}"; then
+    if ! check_url "${BASE_URL}/${CODENAME,,}"; then
         if (( '1' == "${CODENAME_FROM_ARGUMENTS}" )); then
             error_exit 2 "Specified codename '${CODENAME}' is not supported by this script."
         else
@@ -330,8 +392,9 @@ if [[ -n "${CODENAME}" ]]; then
     fi
 fi
 
-if [[ "${EUID}" -ne 0 ]]; then
-    error_exit "This script must be run as root!"
+# Root Check (Fail-fast after validation)
+if (( '0' != "${EUID}" )); then
+    error_exit '1' 'This script must be run as root!'
 fi
 
 # install everything
@@ -343,7 +406,7 @@ if ! [[ -f "${GPG_KEY_PATH}" ]]; then
 fi
 
 # Add repository based on distribution
-if [[ "debian" == "${DISTRO}" ]] && (( '0' == "${is_old_debian}" )); then
+if [[ "debian" == "${DISTRO,,}" ]] && (( '0' == "${is_old_debian}" )); then
     # On Debian:
     #  - Bookworm (12) has a buggy `add-apt-repository` tool
     #  - Trixie (13) and later may not even have that tool
@@ -353,8 +416,8 @@ if [[ "debian" == "${DISTRO}" ]] && (( '0' == "${is_old_debian}" )); then
 Types: deb
 Architectures: amd64 arm64
 Signed-By: ${GPG_KEY_PATH}
-URIs: ${BASE_URL}/${CODENAME}/
-Suites: llvm-toolchain${LINKNAME}${LLVM_VERSION_STRING}
+URIs: ${BASE_URL}/${CODENAME,,}/
+Suites: llvm-toolchain${LINKNAME}${LLVM_VERSION_PATTERNS[${LLVM_VERSION}]}
 Components: main
 
 EOF
@@ -367,24 +430,4 @@ if remove_old_key; then
 fi
 
 apt-get update
-declare -A PKGS
-for _pre in clang{,d} lld{,b} ; do
-    PKGS+=(["${_pre}-${LLVM_VERSION}"]=1)
-done ; unset -v _pre ;
-if (( '1' == "${ALL}" )); then
-    # packages without any suffix
-    for _pre in clang-{format,tidy,tools} ; do
-        PKGS+=(["${_pre}-${LLVM_VERSION}"]=1)
-    done ; unset -v _pre ;
-    # -dev suffixed packages
-    for _pre in lib{c++{,abi},clang{,-{common,cpp}},lldb,omp,unwind} llvm ; do
-        PKGS+=(["${_pre}-${LLVM_VERSION}-dev"]=1)
-    done ; unset -v _pre ;
-
-    PKGS+=(["llvm-${LLVM_VERSION}-tools"]=1)
-    if [ "${LLVM_VERSION}" -gt 14 ]; then
-        PKGS+=(["libclang-rt-${LLVM_VERSION}-dev"]=1 ["libpolly-${LLVM_VERSION}-dev"]=1)
-    fi
-fi
-
 apt-get install -y "${!PKGS[@]}"
