@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 ################################################################################
 # Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -13,23 +13,37 @@
 
 set -euxo pipefail
 
-info()  { printf "[info] %s\n" "$*"; }
-warn()  { printf "[warn] %s\n" "$*" >&2; }
-# error MESSAGE [EXIT_CODE] — default exit code is 1
-error() {
-    local msg="$1"
-    local code="${2:-1}"
-    printf "[error] %s\n" "$msg" >&2
-    exit "$code"
+stdout() { printf -- '%s\n' "$@" ; }
+stderr() { stdout "$@" ; } 1>&2
+
+info()  { stdout "[info] $*"; }
+warn()  { stderr "[warn] $*"; }
+
+# error_exit [EXIT_CODE] [MESSAGE...]
+# Never returns 0
+error_exit() {
+    local previous_exit_code=$?
+    local code="${previous_exit_code}"
+    if [ $# -ge 1 ]; then
+        printf -v code -- '%d' "${1}" 2>/dev/null && \
+            shift || code="${previous_exit_code}"
+    fi
+    local line ; for line in "$@"; do
+        stderr "[error] ${line}"
+    done
+    if [ ${code} -eq 0 ]; then
+        code=1
+    fi
+    exit ${code}
 }
 
 usage() {
     set +x
-    echo "Usage: $0 [llvm_major_version] [all] [OPTIONS]" 1>&2
-    echo -e "all\t\t\tInstall all packages." 1>&2
-    echo -e "-n=code_name\t\tSpecifies the distro codename, for example bionic" 1>&2
-    echo -e "-h\t\t\tPrints this help." 1>&2
-    echo -e "-m=repo_base_url\tSpecifies the base URL from which to download." 1>&2
+    stderr "Usage: ${0} [llvm_major_version] [all] [OPTIONS]" \
+        "all"$'\t\t\t'"Install all packages." \
+        "-n=code_name"$'\t\t'"Specifies the distro codename, for example bionic" \
+        "-h"$'\t\t\t'"Prints this help." \
+        "-m=repo_base_url"$'\t'"Specifies the base URL from which to download."
     exit $#
 }
 
@@ -58,7 +72,7 @@ download_key() {
     elif command -v curl &>/dev/null; then
         curl --proto '=https' --tlsv1.2 -sSf --retry 3 "$url"
     else
-        error "Neither wget nor curl found. Install one and retry." 4
+        error_exit 4 "Neither wget nor curl found. Install one and retry."
     fi
 }
 
@@ -102,12 +116,12 @@ for binary in "${needed_binaries[@]}"; do
 done
 
 if [[ ${#missing_binaries[@]} -gt 0 ]] ; then
-    error "Missing required tools: ${missing_binaries[*]}
-(hint: apt install lsb-release wget software-properties-common gnupg)
-curl is also supported as an alternative to wget" 4
+    error_exit 4 "Missing required tools: ${missing_binaries[*]}" \
+        "(hint: apt install lsb-release wget software-properties-common gnupg)" \
+        "curl is also supported as an alternative to wget"
 fi
 
-case ${DISTRO} in
+case "${DISTRO}" in
     debian)
         # Debian Forky has a workaround because of
         # https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1038383
@@ -159,7 +173,7 @@ if [ "$#" -ge 1 ] && [ "${1::1}" != "-" ]; then
 fi
 
 while getopts ":hm:n:" arg; do
-    case $arg in
+    case "${arg}" in
     h)
         usage
         ;;
@@ -180,32 +194,20 @@ while getopts ":hm:n:" arg; do
 done
 
 if [[ $EUID -ne 0 ]]; then
-    error "This script must be run as root!"
+    error_exit "This script must be run as root!"
 fi
 
 declare -A LLVM_VERSION_PATTERNS
-LLVM_VERSION_PATTERNS[9]="-9"
-LLVM_VERSION_PATTERNS[10]="-10"
-LLVM_VERSION_PATTERNS[11]="-11"
-LLVM_VERSION_PATTERNS[12]="-12"
-LLVM_VERSION_PATTERNS[13]="-13"
-LLVM_VERSION_PATTERNS[14]="-14"
-LLVM_VERSION_PATTERNS[15]="-15"
-LLVM_VERSION_PATTERNS[16]="-16"
-LLVM_VERSION_PATTERNS[17]="-17"
-LLVM_VERSION_PATTERNS[18]="-18"
-LLVM_VERSION_PATTERNS[19]="-19"
-LLVM_VERSION_PATTERNS[20]="-20"
-LLVM_VERSION_PATTERNS[21]="-21"
-LLVM_VERSION_PATTERNS[22]="-22"
-LLVM_VERSION_PATTERNS[23]="-23"
-LLVM_VERSION_PATTERNS[24]=""
+LLVM_VERSION_PATTERNS["24"]=""
+for (( _v=23; _v - 8; _v-- )) ; do
+    LLVM_VERSION_PATTERNS["${_v}"]="-${_v}"
+done ; unset -v _v
 
-if [ ! ${LLVM_VERSION_PATTERNS[$LLVM_VERSION]+_} ]; then
-    error "This script does not support LLVM version $LLVM_VERSION" 3
+if ! [[ -n "${LLVM_VERSION_PATTERNS[${LLVM_VERSION}]+set}" ]]; then
+    error_exit 3 "This script does not support LLVM version ${LLVM_VERSION}"
 fi
 
-LLVM_VERSION_STRING=${LLVM_VERSION_PATTERNS[$LLVM_VERSION]}
+LLVM_VERSION_STRING="${LLVM_VERSION_PATTERNS[${LLVM_VERSION}]}"
 
 # join the repository name
 if [[ -n "${CODENAME}" ]]; then
@@ -213,25 +215,25 @@ if [[ -n "${CODENAME}" ]]; then
     # check if the repository exists for the distro and version
     if ! check_url "${BASE_URL}/${CODENAME}/"; then
         if [[ -n "${CODENAME_FROM_ARGUMENTS}" ]]; then
-            error "Specified codename '${CODENAME}' is not supported by this script." 2
+            error_exit 2 "Specified codename '${CODENAME}' is not supported by this script."
         else
-            error "Distribution '${DISTRO}' in version '${VERSION}' is not supported by this script." 2
+            error_exit 2 "Distribution '${DISTRO}' in version '${VERSION}' is not supported by this script."
         fi
     fi
 fi
 
 
 # install everything
-
-if [[ ! -f /etc/apt/trusted.gpg.d/apt.llvm.org.asc ]]; then
+GPG_KEY_PATH="/etc/apt/trusted.gpg.d/apt.llvm.org.asc"
+if ! [[ -f "${GPG_KEY_PATH}" ]]; then
     GPG_KEY_URL="https://apt.llvm.org/llvm-snapshot.gpg.key"
-    if ! check_url "$GPG_KEY_URL"; then
-        error "GPG key not reachable at $GPG_KEY_URL" 2
+    if ! check_url "${GPG_KEY_URL}"; then
+        error_exit 2 "GPG key not reachable at ${GPG_KEY_URL}"
     fi
-    download_key "$GPG_KEY_URL" | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+    download_key "${GPG_KEY_URL}" | tee "${GPG_KEY_PATH}"
 fi
 
-if [[ -z "`apt-key list 2> /dev/null | grep -i llvm`" ]]; then
+if ! [[ -n "$(apt-key list 2>/dev/null | grep -Fie llvm)" ]]; then
     # Delete the key in the old format
     apt-key del AF4F7421 || true
 fi
@@ -246,25 +248,38 @@ if [[ "${VERSION_CODENAME}" == "bookworm" ]]; then
 elif [[ $is_new_debian -eq 1 ]]; then
     # workaround missing add-apt-repository in newer Debian and use new source.list format
     SOURCES_FILE="/etc/apt/sources.list.d/http_apt_llvm_org_${CODENAME}_-${VERSION_CODENAME}.sources"
-    TEXT_TO_ADD="Types: deb
+    tee -a "${SOURCES_FILE}" >/dev/null <<EOF
+Types: deb
 Architectures: amd64 arm64
-Signed-By: /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+Signed-By: ${GPG_KEY_PATH}
 URIs: ${BASE_URL}/${CODENAME}/
 Suites: llvm-toolchain${LINKNAME}${LLVM_VERSION_STRING}
-Components: main"
-    echo "$TEXT_TO_ADD" | tee -a "$SOURCES_FILE" > /dev/null
+Components: main
+
+EOF
 else
     add-apt-repository -y "${REPO_NAME}"
 fi
 
 apt-get update
-PKG="clang-$LLVM_VERSION lldb-$LLVM_VERSION lld-$LLVM_VERSION clangd-$LLVM_VERSION"
-if [[ $ALL -eq 1 ]]; then
-    # same as in test-install.sh
-    # No worries if we have dups
-    PKG="$PKG clang-tidy-$LLVM_VERSION clang-format-$LLVM_VERSION clang-tools-$LLVM_VERSION llvm-$LLVM_VERSION-dev lld-$LLVM_VERSION lldb-$LLVM_VERSION llvm-$LLVM_VERSION-tools libomp-$LLVM_VERSION-dev libc++-$LLVM_VERSION-dev libc++abi-$LLVM_VERSION-dev libclang-common-$LLVM_VERSION-dev libclang-$LLVM_VERSION-dev libclang-cpp$LLVM_VERSION-dev liblldb-$LLVM_VERSION-dev libunwind-$LLVM_VERSION-dev"
-    if test $LLVM_VERSION -gt 14; then
-        PKG="$PKG libclang-rt-$LLVM_VERSION-dev libpolly-$LLVM_VERSION-dev"
+declare -A PKGS
+for _pre in clang{,d} lld{,b} ; do
+    PKGS+=(["${_pre}-${LLVM_VERSION}"]=1)
+done ; unset -v _pre ;
+if [[ "${ALL}" -eq 1 ]]; then
+    # packages without any suffix
+    for _pre in clang-{format,tidy,tools} ; do
+        PKGS+=(["${_pre}-${LLVM_VERSION}"]=1)
+    done ; unset -v _pre ;
+    # -dev suffixed packages
+    for _pre in lib{c++{,abi},clang{,-{common,cpp}},lldb,omp,unwind} llvm ; do
+        PKGS+=(["${_pre}-${LLVM_VERSION}-dev"]=1)
+    done ; unset -v _pre ;
+
+    PKGS+=(["llvm-${LLVM_VERSION}-tools"]=1)
+    if [ "${LLVM_VERSION}" -gt 14 ]; then
+        PKGS+=(["libclang-rt-${LLVM_VERSION}-dev"]=1 ["libpolly-${LLVM_VERSION}-dev"]=1)
     fi
 fi
-apt-get install -y $PKG
+
+apt-get install -y "${!PKGS[@]}"
